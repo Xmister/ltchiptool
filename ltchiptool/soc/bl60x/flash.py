@@ -152,6 +152,7 @@ class BL60XFlash(SocInterface):
         first_sector = offset // ERASE_SIZE * ERASE_SIZE
         last_sector = (end + ERASE_SIZE - 1) // ERASE_SIZE * ERASE_SIZE
         changed_sectors = []
+        expected_hash = hashlib.sha256()
         for sector_start in range(first_sector, last_sector, ERASE_SIZE):
             sector_end = sector_start + ERASE_SIZE
             write_start = max(offset, sector_start)
@@ -163,6 +164,7 @@ class BL60XFlash(SocInterface):
                 if not chunk:
                     raise ValueError("Input ended before the requested write length")
                 new_data.extend(chunk)
+            expected_hash.update(new_data)
 
             callback.on_message(f"Preparing sector 0x{sector_start:06X}")
             full_sector = write_start == sector_start and write_end == sector_end
@@ -182,21 +184,18 @@ class BL60XFlash(SocInterface):
             if full_sector or old_sector != updated_sector:
                 self.tool.erase_flash(sector_start, sector_end)
                 self.tool.program_flash(sector_start, bytes(updated_sector))
-                changed_sectors.append(
-                    (sector_start, bytes(updated_sector), chunk_length)
-                )
+                changed_sectors.append(chunk_length)
             else:
                 callback.on_update(chunk_length)
 
         if changed_sectors:
             self.tool.check_flash_program()
-            for sector_start, expected_data, chunk_length in changed_sectors:
-                if verify:
-                    expected_hash = hashlib.sha256(expected_data).digest()
-                    if self.tool.hash_flash(sector_start, ERASE_SIZE) != expected_hash:
-                        raise RuntimeError(
-                            f"BL602 flash verification failed at 0x{sector_start:06X}"
-                        )
+            actual_hash = self.tool.hash_flash(offset, length) if verify else None
+            if actual_hash is not None and actual_hash != expected_hash.digest():
+                raise RuntimeError(
+                    f"BL602 flash verification failed at 0x{offset:06X}"
+                )
+            for chunk_length in changed_sectors:
                 callback.on_update(chunk_length)
 
     def flash_update_inactive_slot(
