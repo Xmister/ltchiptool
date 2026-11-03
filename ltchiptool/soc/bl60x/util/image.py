@@ -1,11 +1,10 @@
-"""Build a BL60x firmware-slot image from a full flash backup."""
+"""BL60x image and update-slot helpers."""
 
 from __future__ import annotations
 
 import binascii
 import hashlib
 from dataclasses import dataclass
-from pathlib import Path
 import struct
 from typing import Dict, Optional, Tuple
 
@@ -429,19 +428,3 @@ def make_bl60x_update_plan(
         table_offset=table_offset,
         table_image=table_image,
     )
-
-
-def package_bl60x_slot(
-    backup_path: Path,
-    application_path: Path,
-    output_path: Path,
-    layout: BL60XLayout,
-) -> Tuple[int, int, str]:
-    """Validate inputs, create the slot image, and refuse to overwrite output."""
-    backup = backup_path.read_bytes()
-    application = application_path.read_bytes()
-    _, offset, image = make_bl60x_slot_image(backup, application, layout)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("xb") as output:
-        output.write(image)
-    return offset, len(image), hashlib.sha256(image).hexdigest()

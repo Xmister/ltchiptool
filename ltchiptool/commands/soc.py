@@ -9,7 +9,6 @@ COMMANDS = {
     "rtltool": "ltchiptool/soc/ambz/util/rtltool.py",
     "ambztool": "ltchiptool/soc/ambz/util/ambztool.py",
     "ambz2tool": "ltchiptool/soc/ambz2/util/ambz2tool.py",
-    "bl60x-image": "ltchiptool/soc/bl60x/util/image_cli.py",
     "bl60x-slot-template": "ltchiptool/soc/bl60x/util/slot_cli.py",
     "bl60x-flash": "ltchiptool/soc/bl60x/util/flash_cli.py",
     "ln882htool": "ltchiptool/soc/ln882h/util/ln882htool.py",
