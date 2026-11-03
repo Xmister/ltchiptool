@@ -251,14 +251,23 @@ def make_inactive_slot_table_update(
 ) -> Tuple[int, int, bytes]:
     """Build the inactive table copy that selects the inactive FW slot."""
     tables = _read_partition_tables(backup, layout)
-    if len(tables) != 2:
-        raise BL60XImageError(
-            "both partition-table copies must be valid before updating"
-        )
+    if not tables:
+        raise BL60XImageError("no valid partition-table copy is available to update")
     tables.sort(key=lambda item: item["age"], reverse=True)
-    current, target = tables
-    if current["age"] == target["age"]:
-        raise BL60XImageError("partition-table copy ages are ambiguous")
+    current = tables[0]
+    if len(tables) == 2:
+        target = tables[1]
+        if current["age"] == target["age"]:
+            raise BL60XImageError("partition-table copy ages are ambiguous")
+        target_offset = target["offset"]
+    else:
+        # Preserve the only valid copy and restore redundancy by writing its
+        # replacement to the other partition-table location.
+        target_offset = next(
+            offset
+            for offset in layout.partition_table_offsets
+            if offset != current["offset"]
+        )
     if current["age"] == 0xFFFFFFFF:
         raise BL60XImageError("partition-table age cannot be incremented")
 
@@ -299,7 +308,7 @@ def make_inactive_slot_table_update(
     )
     struct.pack_into("<I", header, 12, _crc32(header[:12]))
     table_image = bytes(header) + bytes(entries) + struct.pack("<I", _crc32(entries))
-    return target_slot, target["offset"], table_image
+    return target_slot, target_offset, table_image
 
 
 def make_bl60x_slot_image(
