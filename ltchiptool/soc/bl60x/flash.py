@@ -165,14 +165,21 @@ class BL60XFlash(SocInterface):
                 new_data.extend(chunk)
 
             callback.on_message(f"Preparing sector 0x{sector_start:06X}")
-            old_sector = b"".join(
-                self.tool.read_flash(sector_start, ERASE_SIZE, verify=False)
-            )
-            updated_sector = bytearray(old_sector)
-            sector_offset = write_start - sector_start
-            updated_sector[sector_offset : sector_offset + chunk_length] = new_data
+            full_sector = write_start == sector_start and write_end == sector_end
+            if full_sector:
+                # The update replaces this whole erase sector, so there are
+                # no existing bytes to preserve before erasing it.
+                updated_sector = new_data
+            else:
+                # Preserve bytes outside a partial-sector update.
+                old_sector = b"".join(
+                    self.tool.read_flash(sector_start, ERASE_SIZE, verify=False)
+                )
+                updated_sector = bytearray(old_sector)
+                sector_offset = write_start - sector_start
+                updated_sector[sector_offset : sector_offset + chunk_length] = new_data
 
-            if old_sector != updated_sector:
+            if full_sector or old_sector != updated_sector:
                 self.tool.erase_flash(sector_start, sector_end)
                 self.tool.program_flash(sector_start, bytes(updated_sector))
                 changed_sectors.append(
