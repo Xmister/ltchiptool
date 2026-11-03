@@ -31,6 +31,9 @@ class SocInterface(ABC):
         if family.is_child_of("lightning-ln882h"):
             from .ln882h import LN882hMain
             return LN882hMain(family)
+        if family.is_child_of("boufallo-bl60x"):
+            from .bl60x import BL60XMain
+            return BL60XMain(family)
         # fmt: on
         raise NotImplementedError(f"Unsupported family - {family.name}")
 
@@ -42,6 +45,7 @@ class SocInterface(ABC):
             "realtek-ambz",
             "realtek-ambz2",
             "lightning-ln882h",
+            "boufallo-bl60x",
         ]
 
     #########################
