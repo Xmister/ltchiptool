@@ -1,36 +1,59 @@
 """BL60x application binary handling."""
 
-from abc import ABC
 import binascii
 import struct
+from abc import ABC
+from pathlib import Path
+from subprocess import run
 from typing import IO, List, Optional
 
 from ltchiptool import SocInterface
+from ltchiptool.soc.common import checkfile, ldargs_parse
 from ltchiptool.util.detection import Detection
 from ltchiptool.util.fileio import peek
 from ltchiptool.util.fwbinary import FirmwareBinary
 
-from .util.image import BOOT_HEADER_SIZE, FW_PARTITION_HEADER_SIZE
+from .util.image import (
+    BOOT_HEADER_SIZE,
+    FW_PARTITION_HEADER_SIZE,
+    make_bl60x_slot_image_from_template,
+)
 
 
 class BL60XBinary(SocInterface, ABC):
     """Build application-only artifacts and recognize packaged slot images."""
 
+    def link2elf(self, ota1: str, ota2: str, args: List[str]):
+        # BL60X links one position-independent application for both slots.
+        elf, ldargs = ldargs_parse(args, None, None)[0]
+        run([self.board.toolchain.prefix + "gcc", *ldargs], check=True)
+        checkfile(elf)
+        return {1: elf}
+
     def elf2bin(self, input: str, ota_idx: int) -> List[FirmwareBinary]:
-        binary = FirmwareBinary(
-            location=input,
-            name=f"firmware_ota{ota_idx}",
-            title=f"BL60x OTA{ota_idx} Application-only Binary",
-            description=(
-                "Application payload only; use the board-aware bl60x-flash "
-                "command to install it into the inactive firmware slot."
-            ),
-            public=True,
+        app = FirmwareBinary(location=input, name=f"firmware_ota{ota_idx}")
+        slot = FirmwareBinary(location=input, name="firmware_slot")
+        run(
+            [
+                self.board.toolchain.prefix + "objcopy",
+                "-O",
+                "binary",
+                "--gap-fill",
+                "0xff",
+                "-S",
+                input,
+                app.path,
+            ],
+            check=True,
         )
-        binary.graph(1)
-        if not binary.isnewer(than=input):
-            self.board.toolchain.objcopy(input, binary.path)
-        return binary.group()
+        template = Path(__file__).parent / "util" / self.board["build.boot_header"]
+        with slot.write() as output:
+            output.write(
+                make_bl60x_slot_image_from_template(
+                    Path(app.path).read_bytes(), template.read_bytes()
+                )
+            )
+        return slot.group()
 
     def detect_file_type(
         self,

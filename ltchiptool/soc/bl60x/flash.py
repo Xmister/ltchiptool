@@ -1,6 +1,6 @@
 import hashlib
 from io import BytesIO
-from typing import Generator, IO, List, Optional, Tuple, Union
+from typing import IO, Generator, List, Optional, Tuple, Union
 
 from ltchiptool import SocInterface
 from ltchiptool.util.flash import FlashConnection, FlashFeatures, FlashMemoryType
@@ -8,7 +8,7 @@ from ltchiptool.util.streams import ProgressCallback
 from uf2tool import UploadContext
 from uf2tool.models.enums import OTAScheme
 
-from .util.bl60xtool import BL60XTool, ERASE_SIZE
+from .util.bl60xtool import ERASE_SIZE, BL60XTool
 from .util.image import (
     PARTITION_TABLE_READ_SIZE,
     BL60XLayout,
@@ -29,8 +29,8 @@ BL60X_GUIDE = [
     "With power disconnected, pull GPIO8/BOOT high through a 10 kΩ resistor, "
     "then reset.",
     "For a dual-OTA UF2, `ltchiptool flash write` selects and commits the "
-    "inactive MINIR3 slot. For an application-only binary, use "
-    "`ltchiptool soc bl60x-flash --board minir3`.",
+    "inactive firmware slot. For an application-only binary, use "
+    "`ltchiptool soc bl60x-flash --board generic-bl602`.",
     "Keep mains disconnected while wiring a mains device.",
 ]
 
@@ -166,9 +166,7 @@ class BL60XFlash(SocInterface):
 
             callback.on_message(f"Preparing sector 0x{sector_start:06X}")
             old_sector = b"".join(
-                self.tool.read_flash(
-                    sector_start, ERASE_SIZE, verify=False
-                )
+                self.tool.read_flash(sector_start, ERASE_SIZE, verify=False)
             )
             updated_sector = bytearray(old_sector)
             sector_offset = write_start - sector_start
@@ -217,42 +215,29 @@ class BL60XFlash(SocInterface):
             for offset in layout.partition_table_offsets
         )
         for offset, length in table_ranges:
-            data = b"".join(
-                self.tool.read_flash(offset, length, verify=False)
-            )
+            data = b"".join(self.tool.read_flash(offset, length, verify=False))
             if len(data) != length:
-                raise RuntimeError(
-                    f"BL602 returned a short read at 0x{offset:06X}"
-                )
+                raise RuntimeError(f"BL602 returned a short read at 0x{offset:06X}")
             image_context[offset : offset + length] = data
 
         active_slot = active_firmware_slot(image_context, layout)
-        if (
-            expected_active_slot is not None
-            and active_slot != expected_active_slot
-        ):
-            raise RuntimeError(
-                "Active FW slot changed while preparing the update"
-            )
+        if expected_active_slot is not None and active_slot != expected_active_slot:
+            raise RuntimeError("Active FW slot changed while preparing the update")
 
         active_header_range = active_firmware_read_range(image_context, layout)
         read_ranges = (*table_ranges, active_header_range)
         callback.on_total(sum(length for _, length in read_ranges))
         callback.on_update(sum(length for _, length in table_ranges))
         active_offset, active_header_length = active_header_range
-        callback.on_message(
-            f"Reading active FW header at 0x{active_offset:06X}"
-        )
+        callback.on_message(f"Reading active FW header at 0x{active_offset:06X}")
         active_header = b"".join(
             self.tool.read_flash(active_offset, active_header_length, verify=False)
         )
         if len(active_header) != active_header_length:
-            raise RuntimeError(
-                f"BL602 returned a short read at 0x{active_offset:06X}"
-            )
-        image_context[
-            active_offset : active_offset + active_header_length
-        ] = active_header
+            raise RuntimeError(f"BL602 returned a short read at 0x{active_offset:06X}")
+        image_context[active_offset : active_offset + active_header_length] = (
+            active_header
+        )
         callback.on_update(active_header_length)
 
         active_application_offset, active_application_length = (
@@ -303,46 +288,38 @@ class BL60XFlash(SocInterface):
         callback: ProgressCallback = ProgressCallback(),
     ) -> None:
         """Select the inactive firmware variant from a dual-OTA UF2 package."""
-        from .util.image import BOARD_LAYOUTS, FW_PARTITION_HEADER_SIZE
-
-        layout = None
-        if ctx.part_table:
-            partitions = {part.name: part for part in ctx.part_table.partitions}
-            for candidate in BOARD_LAYOUTS.values():
-                app = partitions.get("app")
-                ota = partitions.get("ota")
-                if (
-                    app
-                    and ota
-                    and (app.offset, app.length)
-                    == (candidate.fw_addresses[0], candidate.fw_capacities[0])
-                    and (ota.offset, ota.length)
-                    == (candidate.fw_addresses[1], candidate.fw_capacities[1])
-                ):
-                    layout = candidate
-                    break
-            if layout is None:
-                raise ValueError(
-                    "UF2 partition table does not match a verified BL60x layout"
-                )
-        else:
-            board_name = ctx.board_name.lower()
-            board_aliases = {"sonoff-minir3": "minir3"}
-            layout_name = board_aliases.get(board_name, board_name)
-            layout = BOARD_LAYOUTS.get(layout_name)
-            if layout is None:
-                supported = ", ".join(sorted(BOARD_LAYOUTS))
-                raise ValueError(
-                    f"No verified BL60x flash layout for UF2 board "
-                    f"{ctx.board_name!r}; supported layouts: {supported}"
-                )
+        from .util.image import FW_PARTITION_HEADER_SIZE
 
         self.flash_connect()
-        if self.tool.capacity != layout.flash_size:
-            raise ValueError(
-                f"Detected flash is 0x{self.tool.capacity:x} bytes; "
-                f"{layout.name} requires 0x{layout.flash_size:x} bytes"
-            )
+        if ctx.part_table:
+            partitions = {part.name: part for part in ctx.part_table.partitions}
+            if "app" not in partitions or "ota" not in partitions:
+                raise ValueError("UF2 must contain app and ota partitions")
+            app, ota = partitions["app"], partitions["ota"]
+            addresses = (app.offset, ota.offset)
+            sizes = (app.length, ota.length)
+        else:
+            app = ctx.board.region("app")
+            ota = ctx.board.region("ota")
+            addresses = (app[0], ota[0])
+            sizes = (app[1], ota[1])
+        layout = BL60XLayout(
+            name=ctx.board_name,
+            flash_size=self.tool.capacity,
+            fw_addresses=addresses,
+            fw_capacities=sizes,
+        )
+        if any(size <= FW_PARTITION_HEADER_SIZE for size in sizes) or any(
+            offset < max(layout.partition_table_offsets) + 0x1000
+            or offset + size > layout.flash_size
+            for offset, size in zip(addresses, sizes)
+        ):
+            raise ValueError("UF2 firmware partitions exceed the flash capacity")
+        if (
+            addresses[0] < addresses[1] + sizes[1]
+            and addresses[1] < addresses[0] + sizes[0]
+        ):
+            raise ValueError("UF2 firmware partitions overlap")
 
         # Match the AmebaZ flasher: inspect live OTA state, then collect the
         # corresponding linked variant from the UF2 package.
@@ -352,16 +329,12 @@ class BL60XFlash(SocInterface):
             length = PARTITION_TABLE_READ_SIZE
             data = b"".join(self.tool.read_flash(offset, length, verify=False))
             if len(data) != length:
-                raise RuntimeError(
-                    f"BL602 returned a short read at 0x{offset:06X}"
-                )
+                raise RuntimeError(f"BL602 returned a short read at 0x{offset:06X}")
             table_context[offset : offset + length] = data
         active_slot = active_firmware_slot(table_context, layout)
         target_slot = 1 - active_slot
         scheme = (
-            OTAScheme.FLASHER_DUAL_1
-            if target_slot == 0
-            else OTAScheme.FLASHER_DUAL_2
+            OTAScheme.FLASHER_DUAL_1 if target_slot == 0 else OTAScheme.FLASHER_DUAL_2
         )
         callback.on_message(
             f"Active FW slot {active_slot}; selecting UF2 OTA{target_slot + 1}"
@@ -370,12 +343,10 @@ class BL60XFlash(SocInterface):
         if not parts:
             raise ValueError(f"UF2 contains no firmware for {scheme.name}")
 
-        application_offset = (
-            layout.fw_addresses[target_slot] + FW_PARTITION_HEADER_SIZE
+        application_offset = layout.fw_addresses[target_slot] + FW_PARTITION_HEADER_SIZE
+        application_end = (
+            layout.fw_addresses[target_slot] + layout.fw_capacities[target_slot]
         )
-        application_end = layout.fw_addresses[target_slot] + layout.fw_capacities[
-            target_slot
-        ]
         segments = []
         for offset, stream in parts.items():
             data = stream.read()
@@ -396,9 +367,7 @@ class BL60XFlash(SocInterface):
             if previous[0] + len(previous[1]) > current[0]:
                 raise ValueError("UF2 application blocks overlap")
 
-        application_length = (
-            segments[-1][0] + len(segments[-1][1]) - application_offset
-        )
+        application_length = segments[-1][0] + len(segments[-1][1]) - application_offset
         application = bytearray(b"\xff" * application_length)
         for offset, data in segments:
             relative = offset - application_offset
@@ -415,4 +384,3 @@ class BL60XFlash(SocInterface):
         callback.on_message(
             "Update written. Disconnect GPIO8 from high and reset for normal boot."
         )
-

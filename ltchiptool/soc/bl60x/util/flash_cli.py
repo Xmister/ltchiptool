@@ -1,19 +1,20 @@
 import click
 from click import File
 
-from ltchiptool import Family, SocInterface
+from ltchiptool import Board, Family, SocInterface
+from ltchiptool.models import BoardParamType
 from ltchiptool.util.cli import DevicePortParamType
 from ltchiptool.util.flash import FlashConnection
 from ltchiptool.util.streams import ClickProgressCallback
 
-from .image import BOARD_LAYOUTS, BL60XImageError
+from .image import BL60XImageError, BL60XLayout
 
 
 @click.command()
 @click.option(
     "--board",
     required=True,
-    type=click.Choice(sorted(BOARD_LAYOUTS)),
+    type=BoardParamType(),
     help="Known board flash layout to validate against",
 )
 @click.option(
@@ -31,7 +32,7 @@ from .image import BOARD_LAYOUTS, BL60XImageError
 )
 @click.option("-B", "--link-baudrate", type=int)
 @click.option("-b", "--baudrate", type=int)
-def cli(board: str, application, device: str, link_baudrate: int, baudrate: int):
+def cli(board: Board, application, device: str, link_baudrate: int, baudrate: int):
     """Write the inactive FW slot and select it without a second flash reset."""
     family = Family.get(short_name="BL60X")
     soc = SocInterface.get(family)
@@ -41,7 +42,12 @@ def cli(board: str, application, device: str, link_baudrate: int, baudrate: int)
         soc.flash_connect()
         slot_index, slot_offset, table_offset = soc.flash_update_inactive_slot(
             application.read(),
-            BOARD_LAYOUTS[board],
+            BL60XLayout(
+                name=board.name,
+                flash_size=int(board["upload.flash_size"]),
+                fw_addresses=(board.region("app")[0], board.region("ota")[0]),
+                fw_capacities=(board.region("app")[1], board.region("ota")[1]),
+            ),
             callback=ClickProgressCallback(),
         )
     except (BL60XImageError, OSError, RuntimeError, ValueError) as err:

@@ -30,6 +30,7 @@ a = Analysis(
         ("ltchiptool/gui/ko-fi.png", "."),
         ("ltchiptool/gui/colors.json", "."),
         ("ltchiptool/soc/bl60x/util/eflash_loader_rc32m.bin", "ltchiptool/soc/bl60x/util/"),
+        ("ltchiptool/soc/bl60x/util/bl60x_boot_header.bin", "ltchiptool/soc/bl60x/util/"),
         ("ltchiptool/soc/bl60x/util/LICENSE.Bouffalo", "ltchiptool/soc/bl60x/util/"),
         ("pyproject.toml", "."),
     ]

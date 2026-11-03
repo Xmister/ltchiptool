@@ -2,10 +2,14 @@ from pathlib import Path
 
 import click
 
+from ltchiptool import Board
+from ltchiptool.models import BoardParamType
+
 from .image import BL60XImageError, make_bl60x_slot_image_from_template
 
 
 @click.command()
+@click.option("--board", required=True, type=BoardParamType())
 @click.option(
     "--application",
     "application_path",
@@ -18,11 +22,11 @@ from .image import BL60XImageError, make_bl60x_slot_image_from_template
     "output_path",
     required=True,
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Output path for the complete MINIR3 slot image",
+    help="Output path for the complete BL60x slot image",
 )
-def cli(application_path: Path, output_path: Path) -> None:
-    """Package a MINIR3 slot image from its trusted boot-header template."""
-    template_path = Path(__file__).with_name("minir3_boot_header.bin")
+def cli(board: Board, application_path: Path, output_path: Path) -> None:
+    """Package a BL60x slot image from its boot-header template."""
+    template_path = Path(__file__).parent / board["build.boot_header"]
     try:
         slot = make_bl60x_slot_image_from_template(
             application_path.read_bytes(), template_path.read_bytes()

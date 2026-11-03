@@ -9,17 +9,23 @@ from types import SimpleNamespace
 from unittest.mock import ANY, Mock
 
 from ltchiptool import Family
+from ltchiptool.soc.bl60x.flash import BL60XFlash
 from ltchiptool.soc.bl60x.util.image import (
-    BL60XLayout,
     BL60XImageError,
-    MINIR3_LAYOUT,
+    BL60XLayout,
     make_bl60x_slot_image,
     make_inactive_slot_table_update,
 )
-from ltchiptool.soc.bl60x.flash import BL60XFlash
-from uf2tool.models import Image, UF2, UploadContext
+from uf2tool.models import UF2, Image, UploadContext
 from uf2tool.models.enums import OTAScheme
 from uf2tool.writer import UF2Writer
+
+MINIR3_LAYOUT = BL60XLayout(
+    name="generic-bl602",
+    flash_size=0x200000,
+    fw_addresses=(0x10000, 0x13C000),
+    fw_capacities=(0x12C000, 0xB4000),
+)
 
 TEST_LAYOUT = BL60XLayout(
     name="test",
@@ -50,9 +56,9 @@ def make_backup(
     firmware_offset = layout.fw_addresses[1 if retired_mfg_alias else 0]
     backup[firmware_offset : firmware_offset + 176] = boot_header
     application_offset = firmware_offset + 0x1000
-    backup[
-        application_offset : application_offset + len(old_application)
-    ] = old_application
+    backup[application_offset : application_offset + len(old_application)] = (
+        old_application
+    )
 
     entries = [
         struct.pack(
@@ -143,7 +149,9 @@ class BL60XImageTest(unittest.TestCase):
             make_bl60x_slot_image(b"\xff" * 0x400000, b"new app", TEST_LAYOUT)
 
     def test_rejects_partition_table_that_does_not_match_board_slots(self):
-        with self.assertRaisesRegex(BL60XImageError, "does not match the minir3 FW"):
+        with self.assertRaisesRegex(
+            BL60XImageError, "does not match the generic-bl602 FW"
+        ):
             make_bl60x_slot_image(make_backup(), b"new app", MINIR3_LAYOUT)
 
     def test_rejects_corrupt_partition_table(self):
@@ -262,9 +270,7 @@ class BL60XImageTest(unittest.TestCase):
                 flash.flash_connect = Mock()
                 flash.flash_update_inactive_slot = Mock()
                 target_slot = 1 - active_slot
-                application_offset = (
-                    MINIR3_LAYOUT.fw_addresses[target_slot] + 0x1000
-                )
+                application_offset = MINIR3_LAYOUT.fw_addresses[target_slot] + 0x1000
                 context = SimpleNamespace(
                     board_name="generic-bl602",
                     part_table=SimpleNamespace(
@@ -282,9 +288,7 @@ class BL60XImageTest(unittest.TestCase):
                         ]
                     ),
                     collect_data=Mock(
-                        return_value={
-                            application_offset: io.BytesIO(b"app data")
-                        }
+                        return_value={application_offset: io.BytesIO(b"app data")}
                     ),
                 )
 
@@ -303,6 +307,30 @@ class BL60XImageTest(unittest.TestCase):
                     expected_active_slot=active_slot,
                     verify=True,
                 )
+
+    def test_uf2_layout_must_match_live_partition_table(self):
+        backup = make_backup(layout=MINIR3_LAYOUT)
+        flash = BL60XFlash.__new__(BL60XFlash)
+        flash.tool = SimpleNamespace(
+            capacity=MINIR3_LAYOUT.flash_size,
+            read_flash=lambda offset, length, verify: iter(
+                [backup[offset : offset + length]]
+            ),
+        )
+        flash.flash_connect = Mock()
+        flash.flash_update_inactive_slot = Mock()
+        context = SimpleNamespace(
+            board_name="generic-bl602",
+            part_table=SimpleNamespace(
+                partitions=[
+                    SimpleNamespace(name="app", offset=0x10000, length=0x12C000),
+                    SimpleNamespace(name="ota", offset=0x140000, length=0xB4000),
+                ]
+            ),
+        )
+        with self.assertRaisesRegex(BL60XImageError, "does not match"):
+            flash.flash_write_uf2(context)
+        flash.flash_update_inactive_slot.assert_not_called()
 
     def test_dual_slot_uf2_maps_same_app_to_minir3_app_and_ota_regions(self):
         class BoardStub:
@@ -334,8 +362,7 @@ class BL60XImageTest(unittest.TestCase):
             application.write_bytes(b"application payload")
             output = io.BytesIO()
             image = Image(
-                f"{application},{application}+0x1000="
-                "device:app,ota;flasher:app,ota"
+                f"{application},{application}+0x1000=" "device:app,ota;flasher:app,ota"
             )
             writer = UF2Writer(output, family, legacy=False)
             writer.set_board(BoardStub())

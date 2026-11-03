@@ -3,6 +3,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ltchiptool import Family, SocInterface
 from ltchiptool.util.detection import Detection
@@ -24,9 +25,7 @@ class BL60XBinaryTest(unittest.TestCase):
         header = bytearray(176)
         header[:4] = b"BFNP"
         struct.pack_into("<I", header, 120, len(application))
-        struct.pack_into(
-            "<I", header, 172, binascii.crc32(header[:172]) & 0xFFFFFFFF
-        )
+        struct.pack_into("<I", header, 172, binascii.crc32(header[:172]) & 0xFFFFFFFF)
         image = bytes(header) + b"\xff" * (0x1000 - len(header)) + application
 
         with tempfile.TemporaryFile() as file:
@@ -46,24 +45,34 @@ class BL60XBinaryTest(unittest.TestCase):
 
         self.assertIsNone(detection)
 
-    def test_elf2bin_emits_explicitly_application_only_artifact(self):
+    def test_elf2bin_generates_application_and_slot(self):
         class Toolchain:
-            def objcopy(self, source, destination):
-                Path(destination).write_bytes(Path(source).read_bytes())
+            prefix = "test-"
 
-        with tempfile.TemporaryDirectory() as directory:
+        class BoardStub:
+            toolchain = Toolchain()
+
+            def __getitem__(self, key):
+                assert key == "build.boot_header"
+                return "bl60x_boot_header.bin"
+
+        def objcopy(args, check):
+            Path(args[-1]).write_bytes(b"application payload")
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "ltchiptool.soc.bl60x.binary.run", side_effect=objcopy
+        ):
             elf = Path(directory) / "firmware.elf"
             elf.write_bytes(b"test ELF payload")
-            self.soc.board = type(
-                "BoardStub", (), {"toolchain": Toolchain()}
-            )()
-
-            binaries = self.soc.elf2bin(str(elf), 1)
-
-            self.assertEqual(len(binaries), 1)
-            self.assertEqual(Path(binaries[0].path).read_bytes(), elf.read_bytes())
-            self.assertIn("Application-only", binaries[0].title)
-            self.assertIn("bl60x-flash", binaries[0].description)
+            self.soc.board = BoardStub()
+            self.soc.elf2bin(str(elf), 1)
+            self.assertEqual(
+                (Path(directory) / "image_firmware_ota1.bin").read_bytes(),
+                b"application payload",
+            )
+            slot = (Path(directory) / "image_firmware_slot.bin").read_bytes()
+            self.assertEqual(slot[:4], b"BFNP")
+            self.assertEqual(slot[0x1000:0x1013], b"application payload")
 
 
 if __name__ == "__main__":

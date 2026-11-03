@@ -29,17 +29,6 @@ class BL60XLayout:
     partition_table_offsets: Tuple[int, int] = PARTITION_TABLE_OFFSETS
 
 
-MINIR3_LAYOUT = BL60XLayout(
-    name="minir3",
-    flash_size=0x200000,
-    fw_addresses=(0x10000, 0x13C000),
-    fw_capacities=(0x12C000, 0xB4000),
-)
-BOARD_LAYOUTS: Dict[str, BL60XLayout] = {
-    MINIR3_LAYOUT.name: MINIR3_LAYOUT,
-}
-
-
 class BL60XImageError(ValueError):
     """The backup or application cannot produce a safe BL60x image."""
 
@@ -87,9 +76,7 @@ def _read_partition_tables(backup: bytes, layout: BL60XLayout):
         partitions = []
         valid = True
         for index in range(count):
-            values = PARTITION_ENTRY.unpack_from(
-                entries, index * PARTITION_ENTRY.size
-            )
+            values = PARTITION_ENTRY.unpack_from(entries, index * PARTITION_ENTRY.size)
             (
                 kind,
                 _,
@@ -108,9 +95,7 @@ def _read_partition_tables(backup: bytes, layout: BL60XLayout):
             partitions.append(
                 {
                     "kind": kind,
-                    "name": raw_name.split(b"\0", 1)[0].decode(
-                        "ascii", "replace"
-                    ),
+                    "name": raw_name.split(b"\0", 1)[0].decode("ascii", "replace"),
                     "active": active,
                     "addresses": (addr0, addr1),
                     "sizes": (size0, size1),
@@ -169,9 +154,7 @@ def active_firmware_read_range(
     sparse_backup: bytes, layout: BL60XLayout
 ) -> Tuple[int, int]:
     """Return the active FW header range needed to validate its metadata."""
-    _, _, _, offset, capacity, image_length = _firmware_partition(
-        sparse_backup, layout
-    )
+    _, _, _, offset, capacity, image_length = _firmware_partition(sparse_backup, layout)
     if image_length > capacity or offset + image_length > layout.flash_size:
         raise BL60XImageError("active FW image extends beyond its partition")
     return offset, min(FW_PARTITION_HEADER_SIZE, image_length)
@@ -186,18 +169,14 @@ def active_application_hash_range(
     sparse_backup: bytes, layout: BL60XLayout
 ) -> Tuple[int, int]:
     """Return the active app range after validating its locally-read header."""
-    _, _, _, offset, capacity, image_length = _firmware_partition(
-        sparse_backup, layout
-    )
+    _, _, _, offset, capacity, image_length = _firmware_partition(sparse_backup, layout)
     header = sparse_backup[offset : offset + BOOT_HEADER_SIZE]
     if len(header) != BOOT_HEADER_SIZE or header[:4] != b"BFNP":
         raise BL60XImageError("active FW slot has no complete BFNP boot header")
     if struct.unpack_from("<I", header, 172)[0] != _crc32(header[:172]):
         raise BL60XImageError("active FW boot-header CRC does not match")
     if header[116] & 0x0F:
-        raise BL60XImageError(
-            "signed or encrypted boot headers are not supported"
-        )
+        raise BL60XImageError("signed or encrypted boot headers are not supported")
     application_length = struct.unpack_from("<I", header, 120)[0]
     if (
         image_length != FW_PARTITION_HEADER_SIZE + application_length
@@ -245,9 +224,7 @@ def _verified_boot_header(
     if struct.unpack_from("<I", header, 172)[0] != _crc32(header[:172]):
         raise BL60XImageError("active FW boot-header CRC does not match")
     if header[116] & 0x0F:
-        raise BL60XImageError(
-            "signed or encrypted boot headers are not supported"
-        )
+        raise BL60XImageError("signed or encrypted boot headers are not supported")
 
     old_application_length = struct.unpack_from("<I", header, 120)[0]
     if image_length != FW_PARTITION_HEADER_SIZE + old_application_length:
@@ -256,8 +233,10 @@ def _verified_boot_header(
         )
     if active_application_hash is None:
         old_application = backup[
-            offset + FW_PARTITION_HEADER_SIZE :
-            offset + FW_PARTITION_HEADER_SIZE + old_application_length
+            offset
+            + FW_PARTITION_HEADER_SIZE : offset
+            + FW_PARTITION_HEADER_SIZE
+            + old_application_length
         ]
         if len(old_application) != old_application_length:
             raise BL60XImageError("active application data is incomplete")
@@ -292,9 +271,7 @@ def make_inactive_slot_table_update(
     if len(fw_indexes) != 1:
         raise BL60XImageError("partition table must contain exactly one FW entry")
     fw_index = fw_indexes[0]
-    values = list(
-        PARTITION_ENTRY.unpack_from(entries, fw_index * PARTITION_ENTRY.size)
-    )
+    values = list(PARTITION_ENTRY.unpack_from(entries, fw_index * PARTITION_ENTRY.size))
     if (
         tuple(values[4:6]) != layout.fw_addresses
         or tuple(values[6:8]) != layout.fw_capacities
@@ -321,11 +298,7 @@ def make_inactive_slot_table_update(
         )
     )
     struct.pack_into("<I", header, 12, _crc32(header[:12]))
-    table_image = (
-        bytes(header)
-        + bytes(entries)
-        + struct.pack("<I", _crc32(entries))
-    )
+    table_image = bytes(header) + bytes(entries) + struct.pack("<I", _crc32(entries))
     return target_slot, target["offset"], table_image
 
 
@@ -371,27 +344,25 @@ def make_bl60x_slot_image(
     struct.pack_into("<I", header, 120, len(padded_application))
     header[132:164] = hashlib.sha256(padded_application).digest()
     struct.pack_into("<I", header, 172, _crc32(header[:172]))
-    bootinfo = bytes(header) + b"\xff" * (
-        FW_PARTITION_HEADER_SIZE - BOOT_HEADER_SIZE
-    )
+    bootinfo = bytes(header) + b"\xff" * (FW_PARTITION_HEADER_SIZE - BOOT_HEADER_SIZE)
     return target_slot, offset, bootinfo + padded_application
 
 
 def make_bl60x_slot_image_from_template(
     application: bytes, header_template: bytes
 ) -> bytes:
-    """Build a MINIR3 FW slot image using its verified BFNP header template.
+    """Build a BL60x FW slot image using its configured BFNP header template.
 
     This is used when producing the UF2 consumed by LibreTiny's runtime
     Update/UF2 path. The updater chooses the physical slot at runtime, so the
     same image bytes are placed in both logical slot variants.
     """
     if len(header_template) != BOOT_HEADER_SIZE or header_template[:4] != b"BFNP":
-        raise BL60XImageError("MINIR3 boot header template is invalid")
+        raise BL60XImageError("BL60x boot header template is invalid")
     if struct.unpack_from("<I", header_template, 172)[0] != _crc32(
         header_template[:172]
     ):
-        raise BL60XImageError("MINIR3 boot header template CRC does not match")
+        raise BL60XImageError("BL60x boot header template CRC does not match")
     if header_template[116] & 0x0F:
         raise BL60XImageError("signed or encrypted boot headers are not supported")
     if not application:
