@@ -73,7 +73,7 @@ class BL60XProtocolTest(unittest.TestCase):
         tool.erase_flash(0x1000, 0x2000)
 
         tool._command.assert_called_once_with(
-            0x30, struct.pack("<II", 0x1000, 0x2000), False, 56
+            0x30, struct.pack("<II", 0x1000, 0x1FFF), False, 56
         )
         with self.assertRaisesRegex(ValueError, "aligned"):
             tool.erase_flash(1, 0x1000)

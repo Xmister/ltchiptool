@@ -213,11 +213,14 @@ class BL60XTool(SerialToolBase):
                 raise BL60XProtocolError("BL602 flash read SHA-256 verification failed")
 
     def erase_flash(self, start: int, end: int) -> None:
+        """Erase the half-open range [start, end) in flash."""
         if start < 0 or end <= start or end > self.capacity:
             raise ValueError("BL602 erase range is outside detected flash capacity")
         if start % ERASE_SIZE or end % ERASE_SIZE:
             raise ValueError("BL602 erase range must be aligned to 4 KiB sectors")
-        self.loader_command(0x30, struct.pack("<II", start, end))
+        # The loader's erase command takes an inclusive end address, while the
+        # ltchiptool flash interface and this method use a half-open range.
+        self.loader_command(0x30, struct.pack("<II", start, end - 1))
 
     def program_flash(self, address: int, data: bytes) -> None:
         if address < 0 or address + len(data) > self.capacity:
