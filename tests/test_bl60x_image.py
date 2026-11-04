@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import ANY, Mock
+from unittest.mock import ANY, Mock, patch
 
 from ltchiptool import Family
 from ltchiptool.soc.bl60x.flash import BL60XFlash
@@ -14,6 +14,7 @@ from ltchiptool.soc.bl60x.util.image import (
     BL60XImageError,
     BL60XLayout,
     make_bl60x_slot_image,
+    make_bl60x_update_plan,
     make_inactive_slot_table_update,
 )
 from uf2tool.models import UF2, Image, UploadContext
@@ -109,7 +110,7 @@ def make_backup(
 
 
 class BL60XImageTest(unittest.TestCase):
-    def test_packages_application_for_inactive_slot(self):
+    def test_packages_application_for_slot0(self):
         application = b"new application image"
 
         slot, offset, image = make_bl60x_slot_image(
@@ -118,8 +119,8 @@ class BL60XImageTest(unittest.TestCase):
 
         padded_application = application + b"\xff" * ((-len(application)) % 16)
         header = image[:176]
-        self.assertEqual(slot, 1)
-        self.assertEqual(offset, 0x30000)
+        self.assertEqual(slot, 0)
+        self.assertEqual(offset, 0x10000)
         self.assertEqual(len(image), 0x1000 + len(padded_application))
         self.assertEqual(image[0x1000:], padded_application)
         self.assertEqual(
@@ -142,7 +143,7 @@ class BL60XImageTest(unittest.TestCase):
             make_backup(flash_size=0x400000), b"new application", larger_layout
         )
 
-        self.assertEqual(offset, 0x30000)
+        self.assertEqual(offset, 0x10000)
 
     def test_rejects_backup_that_does_not_match_board_flash_size(self):
         with self.assertRaisesRegex(BL60XImageError, "exactly 0x200000 bytes"):
@@ -173,17 +174,20 @@ class BL60XImageTest(unittest.TestCase):
         with self.assertRaisesRegex(BL60XImageError, "SHA-256"):
             make_bl60x_slot_image(bytes(backup), b"new app", TEST_LAYOUT)
 
-    def test_rejects_application_larger_than_inactive_slot(self):
-        with self.assertRaisesRegex(BL60XImageError, "inactive slot 1 holds"):
+    def test_rejects_application_larger_than_slot0(self):
+        with self.assertRaisesRegex(BL60XImageError, "slot 0 holds"):
             make_bl60x_slot_image(make_backup(), b"x" * 0x1F100, TEST_LAYOUT)
 
-    def test_rejects_inactive_slot_overlapping_another_partition(self):
+    def test_rejects_requested_slot_overlapping_another_partition(self):
         with self.assertRaisesRegex(BL60XImageError, "FW slot overlaps partition"):
             make_bl60x_slot_image(
-                make_backup(overlap_inactive_slot=True), b"new app", TEST_LAYOUT
+                make_backup(overlap_inactive_slot=True),
+                b"new app",
+                TEST_LAYOUT,
+                target_slot=1,
             )
 
-    def test_packages_inactive_slot_when_current_slot1_has_retired_mfg_alias(self):
+    def test_packages_slot0_when_current_slot1_has_retired_mfg_alias(self):
         slot, offset, _ = make_bl60x_slot_image(
             make_backup(retired_mfg_alias=True, overlap_address=0x30000),
             b"new app",
@@ -215,7 +219,23 @@ class BL60XImageTest(unittest.TestCase):
             binascii.crc32(table[16 : 16 + count * 36]) & 0xFFFFFFFF,
         )
 
-    def test_flash_update_writes_slot_before_activating_it(self):
+    def test_serial_update_plan_always_selects_slot0(self):
+        for active_slot in (0, 1):
+            with self.subTest(active_slot=active_slot):
+                backup = make_backup(
+                    retired_mfg_alias=active_slot == 1,
+                    overlap_address=MINIR3_LAYOUT.fw_addresses[1],
+                    layout=MINIR3_LAYOUT,
+                )
+                plan = make_bl60x_update_plan(
+                    backup, b"new app", MINIR3_LAYOUT, target_slot=0
+                )
+                fw = struct.unpack_from("<BBB9s6I", plan.table_image, 16)
+                self.assertEqual(plan.slot_index, 0)
+                self.assertEqual(plan.slot_offset, MINIR3_LAYOUT.fw_addresses[0])
+                self.assertEqual(fw[2], 0)
+
+    def test_flash_update_writes_slot0_before_selecting_it(self):
         flash = BL60XFlash.__new__(BL60XFlash)
         backup = make_backup()
         reads = []
@@ -240,20 +260,20 @@ class BL60XImageTest(unittest.TestCase):
         flash.flash_write_raw = record_write
         flash.flash_disconnect = Mock()
 
-        slot, slot_offset, table_offset = flash.flash_update_inactive_slot(
+        slot, slot_offset, table_offset = flash.flash_update_slot0(
             b"new app", TEST_LAYOUT
         )
 
-        self.assertEqual(slot, 1)
-        self.assertEqual(slot_offset, 0x30000)
-        self.assertEqual([offset for offset, _ in writes], [0x30000, 0xF000])
+        self.assertEqual(slot, 0)
+        self.assertEqual(slot_offset, 0x10000)
+        self.assertEqual([offset for offset, _ in writes], [0x10000, 0xF000])
         self.assertEqual(
             reads,
             [(0xE000, 0x1000), (0xF000, 0x1000), (0x10000, 0x1000)],
         )
         self.assertEqual(flash.flash_connect.call_count, 1)
 
-    def test_generic_uf2_writer_selects_inactive_linked_variant(self):
+    def test_generic_uf2_writer_always_selects_slot0_variant(self):
         for active_slot in (0, 1):
             with self.subTest(active_slot=active_slot):
                 backup = make_backup(
@@ -268,8 +288,8 @@ class BL60XImageTest(unittest.TestCase):
                     ),
                 )
                 flash.flash_connect = Mock()
-                flash.flash_update_inactive_slot = Mock()
-                target_slot = 1 - active_slot
+                flash.flash_update_slot0 = Mock()
+                target_slot = 0
                 application_offset = MINIR3_LAYOUT.fw_addresses[target_slot] + 0x1000
                 context = SimpleNamespace(
                     board_name="generic-bl602",
@@ -294,13 +314,9 @@ class BL60XImageTest(unittest.TestCase):
 
                 flash.flash_write_uf2(context)
 
-                scheme = (
-                    OTAScheme.FLASHER_DUAL_1
-                    if target_slot == 0
-                    else OTAScheme.FLASHER_DUAL_2
-                )
+                scheme = OTAScheme.FLASHER_DUAL_1
                 context.collect_data.assert_called_once_with(scheme)
-                flash.flash_update_inactive_slot.assert_called_once_with(
+                flash.flash_update_slot0.assert_called_once_with(
                     b"app data",
                     MINIR3_LAYOUT,
                     callback=ANY,
@@ -318,7 +334,7 @@ class BL60XImageTest(unittest.TestCase):
             ),
         )
         flash.flash_connect = Mock()
-        flash.flash_update_inactive_slot = Mock()
+        flash.flash_update_slot0 = Mock()
         context = SimpleNamespace(
             board_name="generic-bl602",
             part_table=SimpleNamespace(
@@ -330,7 +346,7 @@ class BL60XImageTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(BL60XImageError, "does not match"):
             flash.flash_write_uf2(context)
-        flash.flash_update_inactive_slot.assert_not_called()
+        flash.flash_update_slot0.assert_not_called()
 
     def test_dual_slot_uf2_maps_same_app_to_minir3_app_and_ota_regions(self):
         class BoardStub:
@@ -370,7 +386,8 @@ class BL60XImageTest(unittest.TestCase):
 
             output.seek(0)
             uf2 = UF2(output)
-            uf2.read()
+            with patch.object(Family, "get", return_value=family):
+                uf2.read()
             context = UploadContext(uf2)
             first_slot = context.collect_data(OTAScheme.FLASHER_DUAL_1)
             context.seq = 0
@@ -386,14 +403,14 @@ class BL60XImageTest(unittest.TestCase):
                 ),
             )
             flash.flash_connect = Mock()
-            flash.flash_update_inactive_slot = Mock()
+            flash.flash_update_slot0 = Mock()
             flash.flash_write_uf2(context)
 
         self.assertEqual(list(first_slot), [0x11000])
         self.assertEqual(first_slot[0x11000].read(), b"application payload")
         self.assertEqual(list(second_slot), [0x13D000])
         self.assertEqual(second_slot[0x13D000].read(), b"application payload")
-        flash.flash_update_inactive_slot.assert_called_once_with(
+        flash.flash_update_slot0.assert_called_once_with(
             b"application payload",
             MINIR3_LAYOUT,
             callback=ANY,

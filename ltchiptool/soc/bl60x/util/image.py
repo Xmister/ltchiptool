@@ -250,6 +250,16 @@ def make_inactive_slot_table_update(
     backup: bytes, image_length: int, layout: BL60XLayout
 ) -> Tuple[int, int, bytes]:
     """Build the inactive table copy that selects the inactive FW slot."""
+    active_slot = active_firmware_slot(backup, layout)
+    return make_slot_table_update(backup, image_length, layout, 1 - active_slot)
+
+
+def make_slot_table_update(
+    backup: bytes, image_length: int, layout: BL60XLayout, target_slot: int
+) -> Tuple[int, int, bytes]:
+    """Build the older table copy so it selects the requested FW slot."""
+    if target_slot not in (0, 1):
+        raise BL60XImageError(f"invalid FW slot index {target_slot}")
     tables = _read_partition_tables(backup, layout)
     if not tables:
         raise BL60XImageError("no valid partition-table copy is available to update")
@@ -261,8 +271,6 @@ def make_inactive_slot_table_update(
             raise BL60XImageError("partition-table copy ages are ambiguous")
         target_offset = target["offset"]
     else:
-        # Preserve the only valid copy and restore redundancy by writing its
-        # replacement to the other partition-table location.
         target_offset = next(
             offset
             for offset in layout.partition_table_offsets
@@ -290,8 +298,6 @@ def make_inactive_slot_table_update(
         )
     if values[9] == 0xFFFFFFFF:
         raise BL60XImageError("FW partition age cannot be incremented")
-    active_slot = values[2]
-    target_slot = 1 - active_slot
     values[2] = target_slot
     values[8] = image_length
     values[9] += 1
@@ -316,10 +322,13 @@ def make_bl60x_slot_image(
     application: bytes,
     layout: BL60XLayout,
     active_application_hash: Optional[bytes] = None,
+    target_slot: int = 0,
 ) -> Tuple[int, int, bytes]:
-    """Return the inactive FW slot index, offset, and replacement image."""
+    """Return the requested FW slot index, offset, and replacement image."""
     if not application:
         raise BL60XImageError("application binary is empty")
+    if target_slot not in (0, 1):
+        raise BL60XImageError(f"invalid FW slot index {target_slot}")
     (
         table,
         _,
@@ -328,7 +337,6 @@ def make_bl60x_slot_image(
         _,
         active_image_length,
     ) = _firmware_partition(backup, layout)
-    target_slot = 1 - active_slot
     _check_slot_overlaps(
         table["partitions"],
         layout.fw_addresses,
@@ -346,7 +354,7 @@ def make_bl60x_slot_image(
     if slot_image_length > capacity:
         raise BL60XImageError(
             f"firmware requires 0x{slot_image_length:x} bytes; "
-            f"inactive slot {target_slot} holds 0x{capacity:x}"
+            f"slot {target_slot} holds 0x{capacity:x}"
         )
 
     header = bytearray(template)
@@ -391,13 +399,14 @@ def make_bl60x_update_plan(
     application: bytes,
     layout: BL60XLayout,
     active_application_hash: Optional[bytes] = None,
+    target_slot: int = 0,
 ) -> BL60XUpdatePlan:
-    """Plan an inactive-slot write followed by its partition-table activation."""
+    """Plan a requested-slot write followed by its partition-table selection."""
     slot_index, slot_offset, slot_image = make_bl60x_slot_image(
-        backup, application, layout, active_application_hash
+        backup, application, layout, active_application_hash, target_slot
     )
-    table_slot, table_offset, table_image = make_inactive_slot_table_update(
-        backup, len(slot_image), layout
+    table_slot, table_offset, table_image = make_slot_table_update(
+        backup, len(slot_image), layout, target_slot
     )
     if table_slot != slot_index:
         raise BL60XImageError("slot selection changed while planning the update")

@@ -28,8 +28,8 @@ BL60X_GUIDE = [
     ],
     "With power disconnected, pull GPIO8/BOOT high through a 10 kΩ resistor, "
     "then reset.",
-    "For a dual-OTA UF2, `ltchiptool flash write` selects and commits the "
-    "inactive firmware slot. For an application-only binary, use "
+    "For BL60X serial flashing, `ltchiptool flash write` selects and commits "
+    "FW slot 0. For an application-only binary, use "
     "`ltchiptool soc bl60x-flash --board generic-bl602`.",
     "Keep mains disconnected while wiring a mains device.",
 ]
@@ -198,7 +198,7 @@ class BL60XFlash(SocInterface):
             for chunk_length in changed_sectors:
                 callback.on_update(chunk_length)
 
-    def flash_update_inactive_slot(
+    def flash_update_slot0(
         self,
         application: bytes,
         layout: BL60XLayout,
@@ -206,7 +206,7 @@ class BL60XFlash(SocInterface):
         expected_active_slot: Optional[int] = None,
         verify: bool = True,
     ) -> Tuple[int, int, int]:
-        """Write the inactive FW slot, verify it, then select it in the table."""
+        """Write the requested FW slot, verify it, then select it in the table."""
         self.flash_connect()
         if self.tool.capacity != layout.flash_size:
             raise ValueError(
@@ -259,11 +259,12 @@ class BL60XFlash(SocInterface):
             application,
             layout,
             active_application_hash=active_application_hash,
+            target_slot=0,
         )
 
         callback.on_total(len(plan.slot_image) + len(plan.table_image))
         callback.on_message(
-            f"Writing inactive FW slot {plan.slot_index} "
+            f"Writing FW slot {plan.slot_index} "
             f"at 0x{plan.slot_offset:06X}"
         )
         self.flash_write_raw(
@@ -327,8 +328,7 @@ class BL60XFlash(SocInterface):
         ):
             raise ValueError("UF2 firmware partitions overlap")
 
-        # Match the AmebaZ flasher: inspect live OTA state, then collect the
-        # corresponding linked variant from the UF2 package.
+        # BL60X serial flashing always installs the primary app in slot 0.
         table_context = bytearray(layout.flash_size)
         callback.on_message("Checking active FW slot")
         for offset in layout.partition_table_offsets:
@@ -338,16 +338,14 @@ class BL60XFlash(SocInterface):
                 raise RuntimeError(f"BL602 returned a short read at 0x{offset:06X}")
             table_context[offset : offset + length] = data
         active_slot = active_firmware_slot(table_context, layout)
-        target_slot = 1 - active_slot
-        scheme = (
-            OTAScheme.FLASHER_DUAL_1 if target_slot == 0 else OTAScheme.FLASHER_DUAL_2
-        )
+        target_slot = 0
+        scheme = OTAScheme.FLASHER_DUAL_1
         callback.on_message(
-            f"Active FW slot {active_slot}; selecting UF2 OTA{target_slot + 1}"
+            f"Active FW slot {active_slot}; selecting fixed FW slot 0"
         )
         parts = ctx.collect_data(scheme)
         if not parts:
-            raise ValueError(f"UF2 contains no firmware for {scheme.name}")
+            raise ValueError("UF2 contains no firmware for FW slot 0")
 
         application_offset = layout.fw_addresses[target_slot] + FW_PARTITION_HEADER_SIZE
         application_end = (
@@ -362,11 +360,11 @@ class BL60XFlash(SocInterface):
             if offset < application_offset or end > application_end:
                 raise ValueError(
                     f"UF2 firmware block 0x{offset:06X}..0x{end:06X} is outside "
-                    f"target FW slot {target_slot} application range"
+                    "target FW slot 0 application range"
                 )
             segments.append((offset, data))
         if not segments:
-            raise ValueError(f"UF2 contains no application data for {scheme.name}")
+            raise ValueError("UF2 contains no application data for FW slot 0")
 
         segments.sort(key=lambda item: item[0])
         for previous, current in zip(segments, segments[1:]):
@@ -380,7 +378,7 @@ class BL60XFlash(SocInterface):
             application[relative : relative + len(data)] = data
 
         callback.on_total(len(application))
-        self.flash_update_inactive_slot(
+        self.flash_update_slot0(
             bytes(application),
             layout,
             callback=callback,

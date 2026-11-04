@@ -33,14 +33,14 @@ from .image import BL60XImageError, BL60XLayout
 @click.option("-B", "--link-baudrate", type=int)
 @click.option("-b", "--baudrate", type=int)
 def cli(board: Board, application, device: str, link_baudrate: int, baudrate: int):
-    """Write the inactive FW slot and select it without a second flash reset."""
+    """Write FW slot 0 and select it without a second flash reset."""
     family = Family.get(short_name="BL60X")
     soc = SocInterface.get(family)
     soc.flash_set_connection(FlashConnection(device, baudrate, link_baudrate))
     try:
         click.echo("Connecting to BL60x serial loader...")
         soc.flash_connect()
-        slot_index, slot_offset, table_offset = soc.flash_update_inactive_slot(
+        slot_index, slot_offset, table_offset = soc.flash_update_slot0(
             application.read(),
             BL60XLayout(
                 name=board.name,
